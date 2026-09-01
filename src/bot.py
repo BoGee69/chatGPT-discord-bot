@@ -14,7 +14,14 @@ def run_discord_bot():
     @discordClient.event
     async def on_ready():
         await discordClient.send_start_prompt()
-        await discordClient.tree.sync()
+        # Global sync (up to 1h) + Guild instant sync for JEBAG JEBOG
+        try:
+            await discordClient.tree.sync()
+            guild = discord.Object(id=1542788041037320273)
+            await discordClient.tree.sync(guild=guild)
+            logger.info("Slash commands synced (global + guild 1542788041037320273)")
+        except Exception as e:
+            logger.error(f"Failed to sync commands: {e}")
         loop = asyncio.get_event_loop()
         loop.create_task(discordClient.process_messages())
         logger.info(f'{discordClient.user} is now running!')

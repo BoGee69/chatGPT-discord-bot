@@ -70,23 +70,14 @@ class FreeProvider(BaseProvider):
         super().__init__()
         
         # ONLY use providers that work 100% without ANY authentication
-        # These have been tested and verified to work in 2025
+        # Fixed 2026-09-01: Chatai & Cohere providers removed - missing in g4f==0.3.2.9 (caused Crashed)
+        # Keeping only verified provider that exists in this g4f version
         self.working_providers = [
             {
                 'provider': g4f.Provider.Blackbox,
                 'models': ['blackboxai'],
                 'name': 'Blackbox'
             },
-            {
-                'provider': g4f.Provider.Chatai, 
-                'models': ['gpt-3.5-turbo', 'gpt-4'],
-                'name': 'Chatai'
-            },
-            {
-                'provider': g4f.Provider.CohereForAI_C4AI_Command,
-                'models': ['command-r-plus', 'command-r'],
-                'name': 'CohereForAI'
-            }
         ]
         
         # Create provider list for RetryProvider
@@ -197,12 +188,8 @@ class FreeProvider(BaseProvider):
     def get_available_models(self) -> List[ModelInfo]:
         """Return only VERIFIED working models - no dead models!"""
         models = [
-            # VERIFIED WORKING models from tested providers
+            # VERIFIED WORKING models from tested providers (Chatai removed - AttributeError fix)
             ModelInfo("blackboxai", ProviderType.FREE, "Blackbox AI - reliable free model"),
-            ModelInfo("gpt-3.5-turbo", ProviderType.FREE, "GPT-3.5 via Chatai - tested working"),
-            ModelInfo("gpt-4", ProviderType.FREE, "GPT-4 via Chatai - tested working"),
-            ModelInfo("command-r-plus", ProviderType.FREE, "Cohere Command R+ - tested working"),
-            ModelInfo("command-r", ProviderType.FREE, "Cohere Command R - tested working"),
         ]
         
         # Note: Removed all dead models like gpt-4o-mini, llama-3.1-70b, claude-3-haiku

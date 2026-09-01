@@ -310,50 +310,72 @@ class GeminiProvider(BaseProvider):
         genai.configure(api_key=api_key)
         
     async def chat_completion(self, messages: List[Dict[str, str]], model: str, **kwargs) -> str:
-        # Fixed 2026-09-01: gemini-2.0-flash-exp & gemini-1.5-flash 404 on v1beta, add fallback chain
+        # Fixed 2026-09-01: library genai 0.8.x uses v1beta which 404s for many models.
+        # Switch to direct REST v1 API for reliability + fallback chain.
         fallback_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.0-pro", "gemini-pro"]
         target_models = [model] if model and model not in (None, "auto") else fallback_models
-        # Ensure fallback list includes target
         if model and model not in fallback_models and model != "auto":
             target_models = [model] + fallback_models
         elif not model or model == "auto":
             target_models = fallback_models
+        
+        # Convert messages to Gemini REST format (contents)
+        contents = []
+        for msg in messages:
+            role = "user" if msg["role"] == "user" else "model"
+            # Gemini v1 expects role user/model, skip system -> convert to user
+            if msg["role"] == "system":
+                role = "user"
+            contents.append({"role": role, "parts": [{"text": msg["content"]}]})
         
         last_error = None
         for try_model in target_models:
             try:
                 if not try_model:
                     continue
-                # Initialize model
-                gemini_model = genai.GenerativeModel(try_model)
-            
-                # Convert messages to Gemini format
-                chat = gemini_model.start_chat(history=[])
+                # Try REST v1 first (most stable)
+                url = f"https://generativelanguage.googleapis.com/v1/models/{try_model}:generateContent?key={self.api_key}"
+                payload = {"contents": contents, "generationConfig": {"temperature": kwargs.get("temperature", 0.7), "maxOutputTokens": kwargs.get("max_tokens", 2048)}}
                 
-                # Process messages
-                for msg in messages:
-                    if msg["role"] == "user":
-                        response = await asyncio.to_thread(
-                            chat.send_message,
-                            msg["content"]
-                        )
-                    elif msg["role"] == "assistant":
-                        # Add assistant messages to history
-                        chat.history.append({
-                            "role": "model",
-                            "parts": [msg["content"]]
-                        })
-                
-                return response.text
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(url, json=payload) as resp:
+                        data = await resp.json()
+                        if resp.status == 200 and "candidates" in data:
+                            candidate = data["candidates"][0]
+                            parts = candidate.get("content", {}).get("parts", [])
+                            text = "".join(p.get("text", "") for p in parts)
+                            if text:
+                                return text
+                            raise Exception("Empty response from Gemini")
+                        # If 404, try next model
+                        err_msg = str(data)
+                        if resp.status == 404 and try_model != target_models[-1]:
+                            logger.warning(f"Gemini REST {try_model} 404, trying next: {err_msg[:200]}")
+                            last_error = Exception(err_msg)
+                            continue
+                        raise Exception(f"Gemini REST {resp.status}: {err_msg[:500]}")
             except Exception as e:
                 last_error = e
-                # If 404 model not found, try next fallback model
                 if "404" in str(e) and try_model != target_models[-1]:
                     logger.warning(f"Gemini model {try_model} not found, trying next fallback: {e}")
                     continue
-                logger.error(f"Gemini provider error with {try_model}: {e}")
+                # Fallback to genai library as last resort for this model
+                try:
+                    logger.info(f"Trying genai library for {try_model} after REST failed")
+                    gemini_model = genai.GenerativeModel(try_model)
+                    chat = gemini_model.start_chat(history=[])
+                    for msg in messages:
+                        if msg["role"] == "user":
+                            response = await asyncio.to_thread(chat.send_message, msg["content"])
+                        elif msg["role"] == "assistant":
+                            chat.history.append({"role": "model", "parts": [msg["content"]]})
+                    return response.text
+                except Exception as genai_err:
+                    last_error = genai_err
+                    if "404" in str(genai_err) and try_model != target_models[-1]:
+                        continue
+                    raise genai_err
                 raise
-        # If all fallbacks failed
         if last_error:
             logger.error(f"Gemini provider error: {last_error}")
             raise last_error

@@ -310,34 +310,54 @@ class GeminiProvider(BaseProvider):
         genai.configure(api_key=api_key)
         
     async def chat_completion(self, messages: List[Dict[str, str]], model: str, **kwargs) -> str:
-        try:
-            if not model:
-                model = "gemini-2.0-flash-exp"
+        # Fixed 2026-09-01: gemini-2.0-flash-exp & gemini-1.5-flash 404 on v1beta, add fallback chain
+        fallback_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.0-pro", "gemini-pro"]
+        target_models = [model] if model and model not in (None, "auto") else fallback_models
+        # Ensure fallback list includes target
+        if model and model not in fallback_models and model != "auto":
+            target_models = [model] + fallback_models
+        elif not model or model == "auto":
+            target_models = fallback_models
+        
+        last_error = None
+        for try_model in target_models:
+            try:
+                if not try_model:
+                    continue
+                # Initialize model
+                gemini_model = genai.GenerativeModel(try_model)
             
-            # Initialize model
-            gemini_model = genai.GenerativeModel(model)
-            
-            # Convert messages to Gemini format
-            chat = gemini_model.start_chat(history=[])
-            
-            # Process messages
-            for msg in messages:
-                if msg["role"] == "user":
-                    response = await asyncio.to_thread(
-                        chat.send_message,
-                        msg["content"]
-                    )
-                elif msg["role"] == "assistant":
-                    # Add assistant messages to history
-                    chat.history.append({
-                        "role": "model",
-                        "parts": [msg["content"]]
-                    })
-            
-            return response.text
-        except Exception as e:
-            logger.error(f"Gemini provider error: {e}")
-            raise
+                # Convert messages to Gemini format
+                chat = gemini_model.start_chat(history=[])
+                
+                # Process messages
+                for msg in messages:
+                    if msg["role"] == "user":
+                        response = await asyncio.to_thread(
+                            chat.send_message,
+                            msg["content"]
+                        )
+                    elif msg["role"] == "assistant":
+                        # Add assistant messages to history
+                        chat.history.append({
+                            "role": "model",
+                            "parts": [msg["content"]]
+                        })
+                
+                return response.text
+            except Exception as e:
+                last_error = e
+                # If 404 model not found, try next fallback model
+                if "404" in str(e) and try_model != target_models[-1]:
+                    logger.warning(f"Gemini model {try_model} not found, trying next fallback: {e}")
+                    continue
+                logger.error(f"Gemini provider error with {try_model}: {e}")
+                raise
+        # If all fallbacks failed
+        if last_error:
+            logger.error(f"Gemini provider error: {last_error}")
+            raise last_error
+        raise Exception("Gemini: no model available")
     
     async def generate_image(self, prompt: str, model: Optional[str] = None, **kwargs) -> str:
         try:
@@ -360,9 +380,10 @@ class GeminiProvider(BaseProvider):
     
     def get_available_models(self) -> List[ModelInfo]:
         return [
-            ModelInfo("gemini-2.0-flash-exp", ProviderType.GEMINI, "Latest experimental model", supports_vision=True),
+            ModelInfo("gemini-1.5-flash", ProviderType.GEMINI, "Fast multimodal - recommended", supports_vision=True),
             ModelInfo("gemini-1.5-pro", ProviderType.GEMINI, "Advanced reasoning", supports_vision=True),
-            ModelInfo("gemini-1.5-flash", ProviderType.GEMINI, "Fast multimodal", supports_vision=True),
+            ModelInfo("gemini-1.0-pro", ProviderType.GEMINI, "Stable legacy", supports_vision=True),
+            ModelInfo("gemini-2.0-flash-exp", ProviderType.GEMINI, "Experimental (may 404)", supports_vision=True),
             ModelInfo("imagen-3.0-generate-001", ProviderType.GEMINI, "Image generation", supports_image_generation=True),
         ]
     
